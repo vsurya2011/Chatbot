@@ -190,6 +190,28 @@
             100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
         }
 
+        .speech-stop-button {
+            margin-top: 24px;
+            width: 48px;
+            height: 48px;
+            background: rgba(255,255,255,0.08);
+            border: 1px solid rgba(255,255,255,0.2);
+            color: #fff;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1rem;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        .speech-stop-button:hover {
+            background: rgba(239,68,68,0.2);
+            border-color: #ef4444;
+            color: #ef4444;
+        }
+
         /* --- History Panel --- */
         #history-panel {
             position: fixed;
@@ -304,6 +326,9 @@
         <div id="speech-star-button" class="speech-star-button">
             <i class="fa-solid fa-microphone"></i>
         </div>
+        <button id="speech-stop-button" class="speech-stop-button hide" title="Stop">
+            <i class="fa-solid fa-stop"></i>
+        </button>
     </section>
 
     <script type="module">
@@ -362,6 +387,7 @@ async function askAI(prompt) {
         window.currentUser = null;
         let isListening = false;
         let isSpeaking = false;
+        let isPaused = false;
         let recognition = null;
         let currentSection = 'login';
         let historyPanelOpen = false;
@@ -388,6 +414,7 @@ async function askAI(prompt) {
         const chatSend = document.getElementById('chat-send');
         const chatMessages = document.getElementById('chat-messages');
         const speechStarButton = document.getElementById('speech-star-button');
+        const speechStopButton = document.getElementById('speech-stop-button');
         const speechText = document.getElementById('speech-text');
         const speechStatus = document.getElementById('speech-status');
 
@@ -413,6 +440,15 @@ async function askAI(prompt) {
         // We sanitize the email so Firebase doesn't crash on dots or symbols in the folder name
         function getSanitizedEmail(email) {
             return email.replace(/[.#$[\]]/g, '_');
+        }
+
+        // --- Persistent Login (stay logged in until user logs out) ---
+        function saveCurrentUser(user) {
+            localStorage.setItem('athena_current_user', JSON.stringify(user));
+        }
+
+        function clearCurrentUser() {
+            localStorage.removeItem('athena_current_user');
         }
 
         window.startNewChat = function() {
@@ -443,7 +479,10 @@ async function askAI(prompt) {
             if (isSpeaking) {
                 window.speechSynthesis.cancel();
                 isSpeaking = false;
+                isPaused = false;
                 speechText.innerHTML = "";
+                speechStarButton.innerHTML = '<i class="fa-solid fa-microphone"></i>';
+                speechStopButton.classList.add('hide');
             }
             if (isListening && recognition) recognition.stop();
         }
@@ -577,6 +616,7 @@ async function askAI(prompt) {
             localStorage.setItem('athena_users', JSON.stringify(users));
             
             window.currentUser = { name, email };
+            saveCurrentUser(window.currentUser);
             window.switchSection('chat');
             listenToHistory(); // Start pulling from Firebase
         }
@@ -587,6 +627,7 @@ async function askAI(prompt) {
             
             if (email === ADMIN_USER && pass === ADMIN_PASS) {
                 window.currentUser = { name: "Administrator", email: "admin@athena.ai" };
+                saveCurrentUser(window.currentUser);
                 window.switchSection('chat');
                 listenToHistory(); // Start pulling from Firebase
                 return;
@@ -597,6 +638,7 @@ async function askAI(prompt) {
             
             if(found) {
                 window.currentUser = found;
+                saveCurrentUser(window.currentUser);
                 window.switchSection('chat');
                 listenToHistory(); // Start pulling from Firebase
             } else {
@@ -646,16 +688,21 @@ async function askAI(prompt) {
         // --- Speech Logic ---
         function initSpeech() {
             const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-            if (!SpeechRecognition) return;
+            if (!SpeechRecognition) {
+                speechStatus.textContent = "Voice input isn't supported in this browser";
+                return;
+            }
             
             recognition = new SpeechRecognition();
             recognition.continuous = false;
             recognition.interimResults = false;
+            recognition.maxAlternatives = 1;
             recognition.lang = 'en-US';
 
             recognition.onstart = () => {
                 isListening = true;
                 speechStarButton.classList.add('listening');
+                speechStarButton.innerHTML = '<i class="fa-solid fa-microphone"></i>';
                 speechStatus.textContent = "Listening...";
                 speechText.innerHTML = "";
             };
@@ -675,9 +722,20 @@ async function askAI(prompt) {
                 saveToHistory(transcript, reply);
             };
 
-            recognition.onerror = () => {
-                speechStatus.textContent = "Error, try again";
+            recognition.onerror = (event) => {
+                isListening = false;
                 speechStarButton.classList.remove('listening');
+                let msg = "Error, try again";
+                if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
+                    msg = "Mic blocked — allow microphone access in your browser settings";
+                } else if (event.error === 'no-speech') {
+                    msg = "Didn't catch that — tap to try again";
+                } else if (event.error === 'audio-capture') {
+                    msg = "No microphone found on this device";
+                } else if (event.error === 'network') {
+                    msg = "Network error — check your connection";
+                }
+                speechStatus.textContent = msg;
             };
         }
 
@@ -703,6 +761,7 @@ async function askAI(prompt) {
 
         function speakResponse(text) {
             window.speechSynthesis.cancel();
+            isPaused = false;
             speechQueue = cleanMarkdownToSentences(text);
             speechQueueIndex = 0;
 
@@ -711,20 +770,26 @@ async function askAI(prompt) {
                 speechSection.classList.remove('speaking');
                 speechStatus.textContent = "Tap to speak";
                 speechText.innerHTML = "";
+                speechStopButton.classList.add('hide');
                 return;
             }
 
             isSpeaking = true;
             speechSection.classList.add('speaking');
             speechStatus.textContent = "Athena speaking";
+            speechStarButton.innerHTML = '<i class="fa-solid fa-pause"></i>';
+            speechStopButton.classList.remove('hide');
             speakNextSentence();
         }
 
         function speakNextSentence() {
             if (!isSpeaking || speechQueueIndex >= speechQueue.length) {
                 isSpeaking = false;
+                isPaused = false;
                 speechSection.classList.remove('speaking');
                 speechStatus.textContent = "Tap to speak";
+                speechStarButton.innerHTML = '<i class="fa-solid fa-microphone"></i>';
+                speechStopButton.classList.add('hide');
                 renderLyrics();
                 return;
             }
@@ -779,17 +844,56 @@ async function askAI(prompt) {
             }
         });
 
-        speechStarButton.onclick = () => {
+        speechStarButton.onclick = async () => {
+            // While Athena is speaking, this button pauses/resumes instead of stopping
             if (isSpeaking) {
-                window.speechSynthesis.cancel();
-                isSpeaking = false;
-                speechSection.classList.remove('speaking');
-                speechStatus.textContent = "Tap to speak";
-                speechText.innerHTML = "";
+                if (isPaused) {
+                    window.speechSynthesis.resume();
+                    isPaused = false;
+                    speechStarButton.innerHTML = '<i class="fa-solid fa-pause"></i>';
+                    speechStatus.textContent = "Athena speaking";
+                } else {
+                    window.speechSynthesis.pause();
+                    isPaused = true;
+                    speechStarButton.innerHTML = '<i class="fa-solid fa-play"></i>';
+                    speechStatus.textContent = "Paused — tap to resume";
+                }
                 return;
             }
-            if (isListening) recognition.stop();
-            else recognition.start();
+
+            if (isListening) {
+                recognition.stop();
+                return;
+            }
+
+            if (!recognition) {
+                speechStatus.textContent = "Voice input isn't supported in this browser";
+                return;
+            }
+
+            // Explicitly request mic permission first — this makes recognition
+            // start reliably on mobile browsers (Android Chrome/Samsung Internet)
+            // where SpeechRecognition alone can silently fail on first use.
+            try {
+                if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+                    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                    stream.getTracks().forEach(track => track.stop());
+                }
+                recognition.start();
+            } catch (err) {
+                speechStatus.textContent = "Mic access denied — allow microphone access to use voice";
+            }
+        };
+
+        speechStopButton.onclick = () => {
+            window.speechSynthesis.cancel();
+            isSpeaking = false;
+            isPaused = false;
+            speechSection.classList.remove('speaking');
+            speechStatus.textContent = "Tap to speak";
+            speechText.innerHTML = "";
+            speechStarButton.innerHTML = '<i class="fa-solid fa-microphone"></i>';
+            speechStopButton.classList.add('hide');
         };
 
         // Added event listener for New Chat
@@ -800,6 +904,7 @@ async function askAI(prompt) {
         
         document.getElementById('nav-logout').onclick = () => {
             window.currentUser = null;
+            clearCurrentUser();
             if(activeHistoryListener) {
                 off(activeHistoryListener);
                 activeHistoryListener = null;
@@ -808,7 +913,19 @@ async function askAI(prompt) {
         };
 
         window.onload = () => {
-            window.renderLoginContent()
+            const savedUser = localStorage.getItem('athena_current_user');
+            if (savedUser) {
+                try {
+                    window.currentUser = JSON.parse(savedUser);
+                    window.switchSection('chat');
+                    listenToHistory(); // Resume pulling history for the restored session
+                } catch (e) {
+                    clearCurrentUser();
+                    window.renderLoginContent();
+                }
+            } else {
+                window.renderLoginContent();
+            }
             initSpeech();
             if (typeof window !== 'undefined' && window.speechSynthesis) window.speechSynthesis.getVoices();
         };
