@@ -1,0 +1,1 @@
+const API_KEY = process.env.HF_API_KEY;
