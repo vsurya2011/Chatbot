@@ -1,0 +1,13 @@
+{
+  "name": "athena-ai",
+  "version": "1.0.0",
+  "description": "Athena AI Chatbot",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "vercel dev"
+  },
+  "dependencies": {
+    "@huggingface/inference": "^3.10.0"
+  }
+}
